@@ -198,8 +198,9 @@ app.get('/api/status', (req, res) => {
     });
 });
 
+// Замени на:
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, () => {
-    console.log(`🌐 Веб-интерфейс запущен на http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 Веб-интерфейс запущен на порт ${PORT}`);
 });
