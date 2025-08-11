@@ -29,7 +29,17 @@ class UpbitWebScraper {
             12: { userAgent: 'Chrome/114.0.0.0', language: 'ko-KR;q=0.7,ko;q=0.8' },
             13: { userAgent: 'Chrome/126.0.0.0', language: 'ko;q=0.7,ko-KR;q=0.8' },
             14: { userAgent: 'Chrome/113.0.0.0', language: 'ko-KR,ko;q=0.6,en;q=0.1' },
-            15: { userAgent: 'Chrome/127.0.0.0', language: 'ko;q=0.6,ko-KR;q=0.7' }
+            15: { userAgent: 'Chrome/127.0.0.0', language: 'ko;q=0.6,ko-KR;q=0.7' },
+            16: { userAgent: 'Chrome/128.0.0.0', language: 'ko-KR,ko;q=0.5,en;q=0.2' },
+            17: { userAgent: 'Chrome/112.0.0.0', language: 'ko;q=0.5,ko-KR;q=0.6' },
+            18: { userAgent: 'Chrome/129.0.0.0', language: 'ko-KR;q=0.6,ko;q=0.5' },
+            19: { userAgent: 'Chrome/111.0.0.0', language: 'ko;q=0.4,ko-KR;q=0.5,en;q=0.1' },
+            20: { userAgent: 'Chrome/130.0.0.0', language: 'ko-KR,ko;q=0.4' },
+            21: { userAgent: 'Chrome/110.0.0.0', language: 'ko;q=0.3,ko-KR;q=0.4' },
+            22: { userAgent: 'Chrome/131.0.0.0', language: 'ko-KR;q=0.5,ko;q=0.3' },
+            23: { userAgent: 'Chrome/109.0.0.0', language: 'ko;q=0.6,ko-KR;q=0.4' },
+            24: { userAgent: 'Chrome/132.0.0.0', language: 'ko-KR,ko;q=0.2,en;q=0.1' },
+            25: { userAgent: 'Chrome/108.0.0.0', language: 'ko;q=0.2,ko-KR;q=0.3' }
         };
         
         this.config = this.threadConfigs[threadId] || this.threadConfigs[1];

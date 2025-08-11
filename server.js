@@ -126,7 +126,7 @@ app.post('/api/start', (req, res) => {
     const proxyString = 'geo.iproyal.com:12321:qUajpQiN9232Dgco:Dhakfnsjfbsnfb_country-us';
     
     // Создаем 15 потоков
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 25; i++) {
         const scraper = new UpbitWebScraper(proxyString, i);
         
         // Переопределяем метод для синхронизации lastPostId
@@ -161,7 +161,7 @@ app.post('/api/start', (req, res) => {
         setTimeout(() => {
             scraper.startParsing();
             console.log(`🧵${i} Поток ${i} запущен`);
-        }, (i - 1) * 333);
+        }, (i - 1) * 200);
     }
     
     // Перехватываем console.log

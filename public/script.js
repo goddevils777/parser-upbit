@@ -77,7 +77,7 @@ class Dashboard {
 async startParser() {
     const confirmed = await this.showConfirm(
         'Запуск парсера', 
-        'Запустить 15 потоков мониторинга Upbit? Gap ~200-400ms!'
+        'Запустить 25 потоков мониторинга Upbit? Gap ~120-240ms!'
     );
     
     if (!confirmed) return;
