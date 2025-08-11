@@ -10,10 +10,15 @@ class Dashboard {
     }
 
     connectWebSocket() {
-        this.ws = new WebSocket(`ws://${window.location.host}`);
+        // Автоматическое определение протокола (ws для http, wss для https)
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}`;
+        
+        console.log('🔗 Подключение к WebSocket:', wsUrl);
+        this.ws = new WebSocket(wsUrl);
         
         this.ws.onopen = () => {
-            console.log('WebSocket подключен');
+            console.log('✅ WebSocket подключен');
         };
 
         this.ws.onmessage = (event) => {
@@ -31,8 +36,12 @@ class Dashboard {
         };
 
         this.ws.onclose = () => {
-            console.log('WebSocket отключен, переподключение...');
+            console.log('❌ WebSocket отключен, переподключение...');
             setTimeout(() => this.connectWebSocket(), 3000);
+        };
+
+        this.ws.onerror = (error) => {
+            console.error('🚨 Ошибка WebSocket:', error);
         };
     }
 
