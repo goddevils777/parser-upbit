@@ -17,5 +17,8 @@
   },
   "engines": {
     "node": "18.x"
-  }
+  },
+  "keywords": ["upbit", "parser", "telegram", "crypto", "news"],
+  "author": "goddevils777",
+  "license": "MIT"
 }
