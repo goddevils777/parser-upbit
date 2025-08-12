@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs').promises;
+const path = require('path');
 const express = require('express');
 const WebSocket = require('ws');
 const UpbitWebScraper = require('./parser');
@@ -12,6 +14,9 @@ const wss = new WebSocket.Server({ server });
 // Telegram настройки из переменных окружения
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Файл для хранения последнего ID
+const LAST_ID_FILE = path.join(__dirname, 'last_post_id.json');
 
 // Статические файлы
 app.use(express.static('public'));
@@ -30,6 +35,31 @@ wss.on('connection', (ws) => {
     ws.send(JSON.stringify({ type: 'logs', data: logs }));
     ws.send(JSON.stringify({ type: 'posts', data: posts }));
 });
+
+async function loadLastPostId() {
+    try {
+        const data = await fs.readFile(LAST_ID_FILE, 'utf8');
+        const parsed = JSON.parse(data);
+        console.log(`📂 Загружен последний ID из файла: ${parsed.lastPostId}`);
+        return parsed.lastPostId;
+    } catch (error) {
+        console.log('📂 Файл с последним ID не найден, начинаем с нуля');
+        return null;
+    }
+}
+
+// Функция сохранения последнего ID
+async function saveLastPostId(postId) {
+    try {
+        await fs.writeFile(LAST_ID_FILE, JSON.stringify({ 
+            lastPostId: postId, 
+            savedAt: new Date().toISOString() 
+        }));
+        console.log(`💾 Сохранен последний ID: ${postId}`);
+    } catch (error) {
+        console.error('❌ Ошибка сохранения ID:', error.message);
+    }
+}
 
 
 async function sendToTelegram(postData) {
@@ -118,30 +148,39 @@ function broadcastNewPost(postData) {
 }
 
 
-app.post('/api/start', (req, res) => {
+app.post('/api/start', async (req, res) => {
     if (scrapers.length > 0) {
         return res.json({ success: false, message: 'Парсеры уже запущены' });
     }
     
+    // Загружаем последний ID из файла
+    globalLastPostId = await loadLastPostId();
+    console.log(`🔄 Стартуем с последнего ID: ${globalLastPostId || 'новый запуск'}`);
+    
     const proxyString = 'geo.iproyal.com:12321:qUajpQiN9232Dgco:Dhakfnsjfbsnfb_country-us';
     
-    // Создаем 15 потоков
+    // Создаем 25 потоков
     for (let i = 1; i <= 25; i++) {
         const scraper = new UpbitWebScraper(proxyString, i);
         
         // Переопределяем метод для синхронизации lastPostId
-        // Переопределяем метод для синхронизации lastPostId
         const originalCheck = scraper.checkForNewPost.bind(scraper);
         scraper.checkForNewPost = (postData) => {
-            // Используем глобальный lastPostId вместо локального
-            const originalLastPostId = scraper.lastPostId;
+            // Используем глобальный lastPostId
             scraper.lastPostId = globalLastPostId;
             
             const result = originalCheck(postData);
             
             // Обновляем глобальный ID если найден новый пост
             if (result && postData.id !== globalLastPostId) {
+                const oldId = globalLastPostId;
                 globalLastPostId = postData.id;
+                
+                console.log(`🆕 Новый пост обнаружен: ${oldId || 'null'} → ${globalLastPostId}`);
+                
+                // Сохраняем в файл
+                saveLastPostId(globalLastPostId);
+                
                 // Обновляем всем потокам
                 scrapers.forEach(s => s.lastPostId = globalLastPostId);
                 
@@ -157,7 +196,7 @@ app.post('/api/start', (req, res) => {
         
         scrapers.push(scraper);
         
-        // Запускаем с задержкой каждые 333ms (5сек / 15 = 333ms)
+        // Запускаем с задержкой каждые 200ms (5сек / 25 = 200ms)
         setTimeout(() => {
             scraper.startParsing();
             console.log(`🧵${i} Поток ${i} запущен`);
@@ -172,7 +211,7 @@ app.post('/api/start', (req, res) => {
         broadcastLog(message);
     };
     
-    res.json({ success: true, message: '15 потоков запущено!' });
+    res.json({ success: true, message: '25 потоков запущено!' });
 });
 
 // Роут для остановки парсеров
