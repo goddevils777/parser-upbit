@@ -28,7 +28,8 @@ let posts = [];
 let scrapers = [];
 let globalLastPostId = null;
 let lastGlobalRequestTime = null;
-let isProcessingNewPost = false;
+let lastProcessedPostId = null;
+let lastProcessedTime = 0;
 
 // WebSocket для live логов
 wss.on('connection', (ws) => {
@@ -167,11 +168,6 @@ app.post('/api/start', async (req, res) => {
         // Переопределяем метод для синхронизации lastPostId
         const originalCheck = scraper.checkForNewPost.bind(scraper);
         scraper.checkForNewPost = async (postData) => {
-            // Блокировка от одновременной обработки
-            if (isProcessingNewPost) {
-                return false;
-            }
-            
             // Используем глобальный lastPostId
             scraper.lastPostId = globalLastPostId;
             
@@ -179,8 +175,17 @@ app.post('/api/start', async (req, res) => {
             
             // Обновляем глобальный ID если найден новый пост
             if (result && postData.id !== globalLastPostId) {
-                // Блокируем другие потоки
-                isProcessingNewPost = true;
+                const now = Date.now();
+                
+                // Защита от дубликатов: тот же ID в течение 5 секунд
+                if (lastProcessedPostId === postData.id && (now - lastProcessedTime) < 5000) {
+                    console.log(`🚫 Дубликат заблокирован: ID ${postData.id}`);
+                    return false;
+                }
+                
+                // Обновляем блокировку
+                lastProcessedPostId = postData.id;
+                lastProcessedTime = now;
                 
                 const oldId = globalLastPostId;
                 globalLastPostId = postData.id;
@@ -196,18 +201,15 @@ app.post('/api/start', async (req, res) => {
                 // Отправляем в веб-интерфейс
                 broadcastNewPost(result);
                 
-                // Отправляем в Telegram
+                // Отправляем в Telegram ТОЛЬКО РАЗ
                 await sendToTelegram(result);
                 
-                // Разблокируем через 100ms
-                setTimeout(() => {
-                    isProcessingNewPost = false;
-                }, 100);
+                console.log(`✅ Пост ID ${postData.id} обработан полностью`);
             }
             
             return result;
         };
-        
+                
         scrapers.push(scraper);
         
         // Запускаем с задержкой каждые 200ms (5сек / 25 = 200ms)
@@ -249,6 +251,43 @@ app.get('/api/status', (req, res) => {
         threadsCount: scrapers.length,
         lastPostId: globalLastPostId
     });
+});
+
+
+
+// Добавь после других роутов:
+app.get('/api/test-direct', async (req, res) => {
+    const startTime = Date.now();
+    console.log(`🧪 Тест прямого запроса: ${startTime}`);
+    
+    try {
+        const response = await axios.get('https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=1&category=all');
+        const endTime = Date.now();
+        const duration = endTime - startTime;
+        
+        const latestPost = response.data?.data?.notices?.[0];
+        
+        console.log(`✅ Тест завершен: ${endTime} | Длительность: ${duration}ms`);
+        
+        res.json({
+            success: true,
+            duration: duration,
+            latestPost: latestPost ? {
+                id: latestPost.id,
+                title: latestPost.title,
+                created: latestPost.listed_at
+            } : null
+        });
+    } catch (error) {
+        const endTime = Date.now();
+        const duration = endTime - startTime;
+        
+        res.json({
+            success: false,
+            duration: duration,
+            error: error.message
+        });
+    }
 });
 
 // Замени на:

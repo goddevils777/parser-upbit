@@ -68,22 +68,33 @@ createHttpClient() {
         }
     });
 }
+
 async fetchPage() {
     const client = this.createHttpClient();
     const timestamp = new Date().toISOString();
+    const startTime = Date.now();
+    
+    console.log(`🚀 ${this.threadId} Начинаю запрос: ${startTime}`);
     
     try {
         const response = await client.get(this.apiUrl);
+        const endTime = Date.now();
+        const requestDuration = endTime - startTime;
+        
         const notices = response.data?.data?.notices || [];
-        // Убираем старый лог - gap будет показан в checkForNewPost
+        console.log(`✅ ${this.threadId} Ответ получен: ${endTime} | Длительность запроса: ${requestDuration}ms | Новостей: ${notices.length}`);
+        
         return notices;
     } catch (error) {
+        const endTime = Date.now();
+        const requestDuration = endTime - startTime;
+        
         if (error.response?.status === 429) {
-            console.log(`[${timestamp}] 🧵${this.threadId} ⚠️  429 - Rate limit`);
+            console.log(`❌ ${this.threadId} 429 Rate limit за ${requestDuration}ms`);
         } else if (error.response?.status === 403) {
-            console.log(`[${timestamp}] 🧵${this.threadId} ⚠️  403 - CloudFlare блок`);
+            console.log(`❌ ${this.threadId} 403 CloudFlare блок за ${requestDuration}ms`);
         } else {
-            console.log(`[${timestamp}] 🧵${this.threadId} ❌ Ошибка: ${error.message}`);
+            console.log(`❌ ${this.threadId} Ошибка за ${requestDuration}ms: ${error.message}`);
         }
         return null;
     }
