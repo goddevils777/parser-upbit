@@ -28,6 +28,7 @@ let posts = [];
 let scrapers = [];
 let globalLastPostId = null;
 let lastGlobalRequestTime = null;
+let isProcessingNewPost = false;
 
 // WebSocket для live логов
 wss.on('connection', (ws) => {
@@ -165,7 +166,12 @@ app.post('/api/start', async (req, res) => {
         
         // Переопределяем метод для синхронизации lastPostId
         const originalCheck = scraper.checkForNewPost.bind(scraper);
-        scraper.checkForNewPost = (postData) => {
+        scraper.checkForNewPost = async (postData) => {
+            // Блокировка от одновременной обработки
+            if (isProcessingNewPost) {
+                return false;
+            }
+            
             // Используем глобальный lastPostId
             scraper.lastPostId = globalLastPostId;
             
@@ -173,13 +179,16 @@ app.post('/api/start', async (req, res) => {
             
             // Обновляем глобальный ID если найден новый пост
             if (result && postData.id !== globalLastPostId) {
+                // Блокируем другие потоки
+                isProcessingNewPost = true;
+                
                 const oldId = globalLastPostId;
                 globalLastPostId = postData.id;
                 
                 console.log(`🆕 Новый пост обнаружен: ${oldId || 'null'} → ${globalLastPostId}`);
                 
                 // Сохраняем в файл
-                saveLastPostId(globalLastPostId);
+                await saveLastPostId(globalLastPostId);
                 
                 // Обновляем всем потокам
                 scrapers.forEach(s => s.lastPostId = globalLastPostId);
@@ -188,7 +197,12 @@ app.post('/api/start', async (req, res) => {
                 broadcastNewPost(result);
                 
                 // Отправляем в Telegram
-                sendToTelegram(result);
+                await sendToTelegram(result);
+                
+                // Разблокируем через 100ms
+                setTimeout(() => {
+                    isProcessingNewPost = false;
+                }, 100);
             }
             
             return result;

@@ -163,6 +163,10 @@ async startParsing() {
     console.log('🚀 Запуск парсера Upbit API...');
     console.log(`📡 Целевой API: ${this.apiUrl}\n`);
     
+    // Фиксированный интервал для каждого потока
+    const fixedInterval = 1000 + (this.threadId - 1) * 100; // 1.0с, 1.1с, 1.2с... 3.4с
+    console.log(`🧵${this.threadId} Интервал: ${fixedInterval}ms`);
+    
     const parseLoop = async () => {
         const apiData = await this.fetchPage();
         
@@ -173,9 +177,8 @@ async startParsing() {
             }
         }
         
-        // Увеличиваем интервал с 2-5 сек до 3-7 сек
-        const delay = Math.floor(Math.random() * 4000) + 3000;
-        setTimeout(parseLoop, delay);
+        // Фиксированный интервал без рандома
+        setTimeout(parseLoop, fixedInterval);
     };
     
     parseLoop();
