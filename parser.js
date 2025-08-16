@@ -2,8 +2,9 @@ const axios = require('axios');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const cheerio = require('cheerio');
 
-// Глобальная переменная для отслеживания времени
+// Глобальные переменные для отслеживания времени
 let globalLastTime = null;
+let globalLastRequestTime = null; // Время последнего запроса ЛЮБОГО потока
 
 class UpbitWebScraper {
     constructor(proxyString, threadId = 1) {
@@ -50,150 +51,196 @@ class UpbitWebScraper {
         return { host, port, username, password };
     }
 
-createHttpClient() {
-    const { host, port, username, password } = this.parseProxy();
-    const proxyUrl = `http://${username}:${password}@${host}:${port}`;
-    const agent = new HttpsProxyAgent(proxyUrl);
-    
-    return axios.create({
-        httpsAgent: agent,
-        timeout: 4000,
-        headers: {
-            'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ${this.config.userAgent} Safari/537.36`,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': this.config.language,
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
-    });
-}
+    createHttpClient() {
+        const { host, port, username, password } = this.parseProxy();
+        const proxyUrl = `http://${username}:${password}@${host}:${port}`;
+        const agent = new HttpsProxyAgent(proxyUrl);
+        
+        return axios.create({
+            httpsAgent: agent,
+            timeout: 4000,
+            headers: {
+                'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ${this.config.userAgent} Safari/537.36`,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': this.config.language,
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+        });
+    }
 
-async fetchPage() {
-    const client = this.createHttpClient();
-    const timestamp = new Date().toISOString();
-    const startTime = Date.now();
-    
-    console.log(`🚀 ${this.threadId} Начинаю запрос: ${startTime}`);
-    
-    try {
-        const response = await client.get(this.apiUrl);
-        const endTime = Date.now();
-        const requestDuration = endTime - startTime;
+    async fetchPage() {
+        const client = this.createHttpClient();
+        const startTime = Date.now();
         
-        const notices = response.data?.data?.notices || [];
-        console.log(`✅ ${this.threadId} Ответ получен: ${endTime} | Длительность запроса: ${requestDuration}ms | Новостей: ${notices.length}`);
+        // Показываем когда начинаем запрос
+        const startTimeStr = new Date(startTime).toLocaleTimeString('uk-UA', {
+            timeZone: 'Europe/Kiev',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        }) + `.${startTime % 1000}`;
         
-        return notices;
-    } catch (error) {
-        const endTime = Date.now();
-        const requestDuration = endTime - startTime;
-        
-        if (error.response?.status === 429) {
-            console.log(`❌ ${this.threadId} 429 Rate limit за ${requestDuration}ms`);
-        } else if (error.response?.status === 403) {
-            console.log(`❌ ${this.threadId} 403 CloudFlare блок за ${requestDuration}ms`);
+        // Рассчитываем gap с последним запросом ЛЮБОГО потока
+        let globalGapText = '';
+        if (globalLastRequestTime) {
+            const globalGapMs = startTime - globalLastRequestTime;
+            globalGapText = ` | 🌐${globalGapMs}ms`;
         } else {
-            console.log(`❌ ${this.threadId} Ошибка за ${requestDuration}ms: ${error.message}`);
+            globalGapText = ' | 🌐First';
         }
-        return null;
+        
+        // Рассчитываем gap с последним запросом ЭТОГО потока
+        let threadGapText = '';
+        if (this.lastRequestTime) {
+            const threadGapMs = startTime - this.lastRequestTime;
+            threadGapText = ` | ⚡${threadGapMs}ms`;
+        } else {
+            threadGapText = ' | ⚡First';
+        }
+        
+        // Обновляем глобальное время
+        globalLastRequestTime = startTime;
+        
+        try {
+            const response = await client.get(this.apiUrl);
+            const endTime = Date.now();
+            const requestDuration = endTime - startTime;
+            
+            // Обновляем время этого потока
+            this.lastRequestTime = endTime;
+            
+            const notices = response.data?.data?.notices || [];
+            console.log(`✅ ${this.threadId} [${startTimeStr}] Ответ за ${requestDuration}ms | Новостей: ${notices.length}${globalGapText}${threadGapText}`);
+            
+            // Сохраняем время начала запроса для точного времени обнаружения
+            this.lastFetchStartTime = startTime;
+            
+            return notices;
+        } catch (error) {
+            const endTime = Date.now();
+            const requestDuration = endTime - startTime;
+            
+            // Обновляем время даже при ошибке
+            this.lastRequestTime = endTime;
+            
+            if (error.response?.status === 429) {
+                console.log(`❌ ${this.threadId} [${startTimeStr}] 429 Rate limit за ${requestDuration}ms${globalGapText}`);
+            } else if (error.response?.status === 403) {
+                console.log(`❌ ${this.threadId} [${startTimeStr}] 403 CloudFlare блок за ${requestDuration}ms${globalGapText}`);
+            } else {
+                console.log(`❌ ${this.threadId} [${startTimeStr}] Ошибка за ${requestDuration}ms: ${error.message}${globalGapText}`);
+            }
+            return null;
+        }
     }
-}
 
-parseLatestNews(notices) {
-    if (!notices || !Array.isArray(notices) || notices.length === 0) {
-        console.log('⚠️  Нет новостей в API');
-        return null;
+    parseLatestNews(notices) {
+        const parseStartTime = Date.now();
+        console.log(`⏰ ${this.threadId} parseLatestNews внутри функции: ${parseStartTime}`);
+        
+        if (!notices || !Array.isArray(notices) || notices.length === 0) {
+            console.log(`⚠️ ${this.threadId} Нет новостей в API`);
+            return null;
+        }
+        
+        // Берем первую новость (самая свежая)
+        const latestPost = notices[0];
+        
+        const postData = {
+            id: latestPost.id,
+            title: latestPost.title,
+            date: latestPost.listed_at || latestPost.first_listed_at,
+            pinned: latestPost.pinned || false
+        };
+        
+        // Простой лог для отслеживания
+        const shortTitle = postData.title.substring(0, 40) + '...';
+        console.log(`📍 ${this.threadId} ID ${postData.id} | ${shortTitle}`);
+        
+        const parseEndTime = Date.now();
+        console.log(`⏰ ${this.threadId} parseLatestNews объект создан: ${parseEndTime} (${parseEndTime - parseStartTime}ms)`);
+        
+        return postData;
     }
-    
-    // Берем первую новость (самая свежая)
-    const latestPost = notices[0];
-    
-    const postData = {
-        id: latestPost.id,
-        title: latestPost.title,
-        date: latestPost.listed_at || latestPost.first_listed_at,
-        pinned: latestPost.pinned || false
-    };
-    
-    // Убираем отдельный лог поста - он будет в checkForNewPost
-    return postData;
-}
 
-checkForNewPost(postData) {
-    if (!postData) {
+    checkForNewPost(postData) {
+        // Этот метод ПОЛНОСТЬЮ переопределяется в server.js
+        // Здесь только базовая логика для работы без server.js
+        if (!postData) {
+            return false;
+        }
+        
+        // Используем сохраненное время начала запроса или текущее время
+        const detectionTime = this.lastFetchStartTime || Date.now();
+        
+        const postForWeb = {
+            timestamp: new Date().toISOString(),
+            id: postData.id,
+            title: postData.title,
+            date: postData.date,
+            detectedAt: new Date(detectionTime).toISOString(),
+            threadId: this.threadId
+        };
+        
+        // Простая проверка без логирования
+        if (this.lastPostId === null) {
+            this.lastPostId = postData.id;
+            return postForWeb;
+        }
+        
+        if (postData.id !== this.lastPostId) {
+            this.lastPostId = postData.id;
+            return postForWeb;
+        }
+        
         return false;
     }
-    
-    const timestamp = new Date().toISOString();
-    const now = Date.now();
-    
-    // Рассчитываем глобальный gap
-    let gapText = '';
-    if (globalLastTime) {
-        const gapMs = now - globalLastTime;
-        gapText = ` | ⚡${gapMs}ms`;
-    } else {
-        gapText = ' | ⚡First';
-    }
-    globalLastTime = now;
-    
-    const shortTitle = postData.title.substring(0, 50) + '...';
-    const threadInfo = `🧵${this.threadId}`;
-    
-    const postForWeb = {
-        timestamp, 
-        id: postData.id,
-        title: postData.title,
-        date: postData.date,
-        detectedAt: timestamp,
-        threadId: this.threadId
-    };
-    
-    if (this.lastPostId === null) {
-        this.lastPostId = postData.id;
-        console.log(`[${timestamp}] ${threadInfo} 🔥 Инициализация: ID ${postData.id} | ${shortTitle}${gapText}`);
-        this.lastRequestTime = now;
-        return postForWeb;
-    }
-    
-    if (postData.id !== this.lastPostId) {
-        console.log(`[${timestamp}] ${threadInfo} 🚨 НОВЫЙ ПОСТ! ID: ${postData.id} | ${shortTitle}${gapText}`);
-        this.lastPostId = postData.id;
-        this.lastRequestTime = now;
-        return postForWeb;
-    } else {
-        console.log(`[${timestamp}] ${threadInfo} 📍 ID ${postData.id} | ${shortTitle}${gapText}`);
-        this.lastRequestTime = now;
-    }
-    
-    return false;
-}
 
-async startParsing() {
-    console.log('🚀 Запуск парсера Upbit API...');
-    console.log(`📡 Целевой API: ${this.apiUrl}\n`);
-    
-    // Фиксированный интервал для каждого потока
-    const fixedInterval = 1000 + (this.threadId - 1) * 100; // 1.0с, 1.1с, 1.2с... 3.4с
-    console.log(`🧵${this.threadId} Интервал: ${fixedInterval}ms`);
-    
-    const parseLoop = async () => {
-        const apiData = await this.fetchPage();
+    async startParsing() {
+        console.log(`🧵${this.threadId} Поток ${this.threadId} запущен`);
         
-        if (apiData) {
-            const postData = this.parseLatestNews(apiData);
-            if (postData) {
-                this.checkForNewPost(postData);
+        // Фиксированный интервал для каждого потока
+        const fixedInterval = 1000 + (this.threadId - 1) * 100; // 1.0с, 1.1с, 1.2с... 2.4с
+        console.log(`🧵${this.threadId} Интервал запросов: ${fixedInterval}ms`);
+        
+        const parseLoop = async () => {
+            const loopStartTime = Date.now();
+            console.log(`⏰ ${this.threadId} parseLoop начался: ${loopStartTime}`);
+            
+            const apiData = await this.fetchPage();
+            const fetchEndTime = Date.now();
+            console.log(`⏰ ${this.threadId} fetchPage завершен: ${fetchEndTime} (${fetchEndTime - loopStartTime}ms)`);
+            
+            if (apiData) {
+                const parseStartTime = Date.now();
+                console.log(`⏰ ${this.threadId} parseLatestNews начинается: ${parseStartTime}`);
+                
+                const postData = this.parseLatestNews(apiData);
+                const parseEndTime = Date.now();
+                console.log(`⏰ ${this.threadId} parseLatestNews завершен: ${parseEndTime} (${parseEndTime - parseStartTime}ms)`);
+                
+                if (postData) {
+                    const checkStartTime = Date.now();
+                    console.log(`⏰ ${this.threadId} checkForNewPost начинается: ${checkStartTime}`);
+                    
+                    this.checkForNewPost(postData);
+                    
+                    const checkEndTime = Date.now();
+                    console.log(`⏰ ${this.threadId} checkForNewPost завершен: ${checkEndTime} (${checkEndTime - checkStartTime}ms)`);
+                }
             }
-        }
+            
+            const totalTime = Date.now() - loopStartTime;
+            console.log(`⏰ ${this.threadId} parseLoop полный цикл: ${totalTime}ms`);
+            
+            // Фиксированный интервал без рандома
+            setTimeout(parseLoop, fixedInterval);
+        };
         
-        // Фиксированный интервал без рандома
-        setTimeout(parseLoop, fixedInterval);
-    };
-    
-    parseLoop();
-}
+        parseLoop();
+    }
 }
 
 module.exports = UpbitWebScraper;

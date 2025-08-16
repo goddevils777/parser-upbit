@@ -27,8 +27,7 @@ let logs = [];
 let posts = [];
 let scrapers = [];
 let globalLastPostId = null;
-let lastGlobalRequestTime = null;
-let lastProcessedPostId = null;
+let processedPostIds = new Set(); // Кэш обработанных ID
 let lastProcessedTime = 0;
 
 // WebSocket для live логов
@@ -63,12 +62,13 @@ async function saveLastPostId(postId) {
     }
 }
 
-
 async function sendToTelegram(postData) {
     const sendStartTime = Date.now();
     
     try {
-        const kievDate = new Date(postData.date).toLocaleString('uk-UA', {
+        // Исправляем время создания - конвертируем корейское время в киевское
+        const koreanDate = new Date(postData.date);
+        const kievDate = koreanDate.toLocaleString('uk-UA', {
             timeZone: 'Europe/Kiev',
             year: 'numeric',
             month: '2-digit',
@@ -76,7 +76,7 @@ async function sendToTelegram(postData) {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
-        }) + `.${new Date(postData.date).getMilliseconds().toString().padStart(3, '0')}`;
+        });
         
         const detectedDate = new Date(postData.detectedAt).toLocaleString('uk-UA', {
             timeZone: 'Europe/Kiev',
@@ -86,7 +86,7 @@ async function sendToTelegram(postData) {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
-        }) + `.${new Date(postData.detectedAt).getMilliseconds().toString().padStart(3, '0')}`;
+        });
         
         const now = new Date();
         const receivedTime = now.toLocaleString('uk-UA', {
@@ -97,7 +97,7 @@ async function sendToTelegram(postData) {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
-        }) + `.${now.getMilliseconds().toString().padStart(3, '0')}`;
+        });
         
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
         
@@ -116,14 +116,13 @@ async function sendToTelegram(postData) {
         const sendEndTime = Date.now();
         const deliveryTime = sendEndTime - sendStartTime;
         
-        console.log(`📤 Отправлено в Telegram: ID ${postData.id} | Доставка: ${deliveryTime}ms`);
+        console.log(`📤 ✅ Доставлено в Telegram за ${deliveryTime}ms`);
     } catch (error) {
         const sendEndTime = Date.now();
         const deliveryTime = sendEndTime - sendStartTime;
         console.log(`❌ Ошибка отправки в Telegram: ${error.message} | Попытка заняла: ${deliveryTime}ms`);
     }
 }
-
 
 // Функция для отправки логов всем клиентам
 function broadcastLog(message) {
@@ -149,77 +148,223 @@ function broadcastNewPost(postData) {
     });
 }
 
-
 app.post('/api/start', async (req, res) => {
     if (scrapers.length > 0) {
         return res.json({ success: false, message: 'Парсеры уже запущены' });
     }
     
-    // Загружаем последний ID из файла
-    globalLastPostId = await loadLastPostId();
-    console.log(`🔄 Стартуем с последнего ID: ${globalLastPostId || 'новый запуск'}`);
+    // НЕ загружаем из файла - начинаем с нуля каждый раз
+    globalLastPostId = null;
+    console.log(`🔄 Запуск с нуля - файл игнорируется`);
+    
+    // Очищаем кэш при запуске
+    processedPostIds.clear();
     
     const proxyString = 'geo.iproyal.com:12321:qUajpQiN9232Dgco:Dhakfnsjfbsnfb_country-us';
     
-    // Создаем 25 потоков
-    for (let i = 1; i <= 25; i++) {
+    // Флаг для первого поста
+    let firstPostReceived = false;
+    
+    // Переменная для отслеживания первого обнаружения
+    let firstDetectionTime = null;
+    
+    // Создаем 15 потоков (было 25, снижаем нагрузку)
+    for (let i = 1; i <= 15; i++) {
         const scraper = new UpbitWebScraper(proxyString, i);
         
-        // Переопределяем метод для синхронизации lastPostId
+        // НЕ устанавливаем начальный ID - начинаем с null
+        scraper.lastPostId = null;
+        
+        // Переопределяем метод для централизованной обработки
         const originalCheck = scraper.checkForNewPost.bind(scraper);
         scraper.checkForNewPost = async (postData) => {
-            // Используем глобальный lastPostId
-            scraper.lastPostId = globalLastPostId;
+            if (!postData) return false;
             
-            const result = originalCheck(postData);
+            // Записываем время СРАЗУ в начале функции (используем timestamp из логов)
+            const exactDetectionTime = new Date();
+            const timestampForLog = exactDetectionTime.getTime();
             
-            // Обновляем глобальный ID если найден новый пост
-            if (result && postData.id !== globalLastPostId) {
-                const now = Date.now();
-                
-                // Защита от дубликатов: тот же ID в течение 5 секунд
-                if (lastProcessedPostId === postData.id && (now - lastProcessedTime) < 5000) {
-                    console.log(`🚫 Дубликат заблокирован: ID ${postData.id}`);
-                    return false;
-                }
-                
-                // Обновляем блокировку
-                lastProcessedPostId = postData.id;
-                lastProcessedTime = now;
-                
-                const oldId = globalLastPostId;
+            console.log(`⏰ ${scraper.threadId} checkForNewPost время записано: ${timestampForLog}`);
+            
+            // ПЕРВЫЙ пост с любого потока - сразу показываем
+            if (!firstPostReceived) {
+                firstPostReceived = true;
                 globalLastPostId = postData.id;
                 
-                console.log(`🆕 Новый пост обнаружен: ${oldId || 'null'} → ${globalLastPostId}`);
+                console.log(`🚀 ПЕРВЫЙ ПОСТ ID ${postData.id} от потока ${scraper.threadId} - timestamp: ${timestampForLog}`);
                 
-                // Сохраняем в файл
-                await saveLastPostId(globalLastPostId);
+                // МОМЕНТАЛЬНО обновляем ID всем потокам чтобы избежать дублей
+                scrapers.forEach(s => {
+                    s.lastPostId = postData.id;
+                });
                 
-                // Обновляем всем потокам
-                scrapers.forEach(s => s.lastPostId = globalLastPostId);
+                // Используем ТОТЖЕ timestamp для отображения 
+                const displayTime = new Date(timestampForLog);
                 
-                // Отправляем в веб-интерфейс
-                broadcastNewPost(result);
+                // Время обнаружения БЕЗ конверсии часового пояса
+                const detectedKiev = displayTime.toLocaleString('uk-UA', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }) + `.${displayTime.getMilliseconds().toString().padStart(3, '0')}`;
                 
-                // Отправляем в Telegram ТОЛЬКО РАЗ
-                await sendToTelegram(result);
+                console.log(`🕐 Проверка времени: timestamp=${timestampForLog}, отображение=${detectedKiev}`);
                 
-                console.log(`✅ Пост ID ${postData.id} обработан полностью`);
+                // Время создания поста в Киеве
+                const postDate = new Date(postData.date);
+                const createdKiev = postDate.toLocaleString('uk-UA', {
+                    timeZone: 'Europe/Kiev',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }) + `.${postDate.getMilliseconds().toString().padStart(3, '0')}`;
+                
+                // Рассчитываем время обнаружения (gap)
+                const detectionGap = displayTime.getTime() - postDate.getTime();
+                const gapMinutes = Math.floor(detectionGap / 60000);
+                const gapSeconds = Math.floor((detectionGap % 60000) / 1000);
+                const gapMs = detectionGap % 1000;
+                const gapText = `${gapMinutes}м ${gapSeconds}с ${gapMs}мс`;
+                
+                // Создаем объект для отправки
+                const postForSending = {
+                    timestamp: new Date().toISOString(),
+                    id: postData.id,
+                    title: postData.title,
+                    date: postData.date,
+                    detectedAt: displayTime.toISOString(), // Используем тотже timestamp
+                    threadId: scraper.threadId
+                };
+                
+                // Красивый лог в веб-интерфейс
+                const detailedLog = `🚀 ПЕРВЫЙ ПОСТ ОБНАРУЖЕН потоком ${scraper.threadId}:
+**ID:** ${postData.id}
+**Заголовок:** ${postData.title}
+**Создан (Киев):** ${createdKiev}
+**Обнаружен (Киев):** ${detectedKiev}
+⏱️ **Время обнаружения:** ${gapText}
+📤 Моментально передается в интерфейс...`;
+                
+                console.log(detailedLog);
+                
+                // МОМЕНТАЛЬНО отправляем в веб-интерфейс (без ожидания записи в файл)
+                broadcastNewPost(postForSending);
+                
+                console.log(`✅ Первый пост ID ${postData.id} моментально передан в интерфейс, все потоки обновлены`);
+                
+                // Сохраняем в файл АСИНХРОННО (не блокируя отображение)
+                saveLastPostId(postData.id).catch(err => 
+                    console.log(`❌ Ошибка записи в файл: ${err.message}`)
+                );
+                
+                return postForSending;
             }
             
-            return result;
+            // Проверяем только если это действительно больший ID
+            if (postData.id > globalLastPostId && !processedPostIds.has(postData.id)) {
+                console.log(`🆕 Новый пост обнаружен потоком ${scraper.threadId}: ID ${postData.id}`);
+                
+                // Добавляем в кэш
+                processedPostIds.add(postData.id);
+                
+                // Чистим старые ID из кэша (оставляем последние 20)
+                if (processedPostIds.size > 20) {
+                    const sortedIds = Array.from(processedPostIds).sort((a, b) => b - a);
+                    processedPostIds = new Set(sortedIds.slice(0, 20));
+                }
+                
+                // Обновляем глобальный ID
+                globalLastPostId = postData.id;
+                
+                // Время обнаружения в Киеве
+                const detectedTime = new Date();
+                const detectedKiev = detectedTime.toLocaleString('uk-UA', {
+                    timeZone: 'Europe/Kiev',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }) + `.${detectedTime.getMilliseconds().toString().padStart(3, '0')}`;
+                
+                // Время создания поста в Киеве
+                const postDate = new Date(postData.date);
+                const createdKiev = postDate.toLocaleString('uk-UA', {
+                    timeZone: 'Europe/Kiev',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }) + `.${postDate.getMilliseconds().toString().padStart(3, '0')}`;
+                
+                // Рассчитываем время обнаружения (gap)
+                const detectionGap = detectedTime.getTime() - postDate.getTime();
+                const gapMinutes = Math.floor(detectionGap / 60000);
+                const gapSeconds = Math.floor((detectionGap % 60000) / 1000);
+                const gapMs = detectionGap % 1000;
+                const gapText = `${gapMinutes}м ${gapSeconds}с ${gapMs}мс`;
+                
+                // Создаем объект для отправки
+                const postForSending = {
+                    timestamp: new Date().toISOString(),
+                    id: postData.id,
+                    title: postData.title,
+                    date: postData.date,
+                    detectedAt: detectedTime.toISOString(),
+                    threadId: scraper.threadId
+                };
+                
+                // Красивый лог в веб-интерфейс
+                const detailedLog = `**ID:** ${postData.id}
+**Заголовок:** ${postData.title}
+**Создан (Киев):** ${createdKiev}
+**Обнаружен (Киев):** ${detectedKiev}
+⏱️ **Время обнаружения:** ${gapText}
+📤 Отправляется в Telegram...`;
+                
+                console.log(detailedLog);
+                
+                // МОМЕНТАЛЬНО отправляем в веб-интерфейс
+                broadcastNewPost(postForSending);
+                
+                console.log(`✅ Пост ID ${postData.id} моментально передан в интерфейс`);
+                
+                // Сохраняем в файл и отправляем в Telegram АСИНХРОННО
+                Promise.all([
+                    saveLastPostId(postData.id),
+                    sendToTelegram(postForSending)
+                ]).then(() => {
+                    console.log(`📤 ✅ Пост ID ${postData.id} отправлен в Telegram и сохранен в файл`);
+                }).catch(err => {
+                    console.log(`❌ Ошибка при сохранении/отправке: ${err.message}`);
+                });
+                
+                return postForSending;
+            }
+            
+            // Если не новый пост - возвращаем результат оригинальной проверки для логов
+            return originalCheck(postData);
         };
                 
         scrapers.push(scraper);
         
-        // Запускаем с задержкой каждые 200ms (5сек / 25 = 200ms)
+        // Запускаем с задержкой каждые 300ms (15 потоков * 300ms = 4.5 сек)
         setTimeout(() => {
             scraper.startParsing();
             console.log(`🧵${i} Поток ${i} запущен`);
-        }, (i - 1) * 200);
+        }, (i - 1) * 300);
     }
     
-    // Перехватываем console.log
+    // Перехватываем console.log для live логов
     const originalLog = console.log;
     console.log = (...args) => {
         const message = args.join(' ');
@@ -227,7 +372,7 @@ app.post('/api/start', async (req, res) => {
         broadcastLog(message);
     };
     
-    res.json({ success: true, message: '25 потоков запущено!' });
+    res.json({ success: true, message: '15 потоков запущено! Первый пост будет показан моментально при обнаружении.' });
 });
 
 // Роут для остановки парсеров
@@ -239,6 +384,7 @@ app.post('/api/stop', (req, res) => {
     // Очищаем массив парсеров (они остановятся автоматически)
     scrapers.length = 0;
     globalLastPostId = null;
+    processedPostIds.clear(); // Очищаем кэш
     
     console.log('🛑 Все потоки остановлены');
     res.json({ success: true, message: 'Все потоки остановлены' });
@@ -253,9 +399,7 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-
-
-// Добавь после других роутов:
+// Тест прямого запроса
 app.get('/api/test-direct', async (req, res) => {
     const startTime = Date.now();
     console.log(`🧪 Тест прямого запроса: ${startTime}`);
@@ -290,7 +434,6 @@ app.get('/api/test-direct', async (req, res) => {
     }
 });
 
-// Замени на:
 const PORT = process.env.PORT || 3001;
 console.log(`🔧 Запуск на порту: ${PORT}`);
 
